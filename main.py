@@ -667,45 +667,6 @@ def generate_audio_b64(text, filename='output_audio.mp3'):
         raise e
     
 
-def process_file(api_key, file):
-
-    os.environ["OPENAI_API_KEY"] = api_key
-    
-    # Load the PDF file using PyPDFLoader
-    loader = PyPDFLoader(file.name) 
-    documents = loader.load()
-    
-    # Initialize OpenAIEmbeddings for text embeddings
-    embeddings = OpenAIEmbeddings()
-    
-    # Create a ConversationalRetrievalChain with ChatOpenAI language model
-    # and PDF search retriever
-    pdfsearch = Chroma.from_documents(documents, embeddings,)
-
-    chain = ConversationalRetrievalChain.from_llm(ChatOpenAI(temperature=0.3, model_name = "gpt-3.5-turbo-16k"), 
-                                                  retriever=
-                                                  pdfsearch.as_retriever(search_kwargs={"k": 5}),
-                                                  return_source_documents=True)
-    return chain
-
-
-
-def generate_response(api_key, file, query):
-    # global chat_history
-    chat_history = []
-    
-    chain = process_file(api_key, file)
-    
-    # Generate a response using the conversation chain
-    result = chain({"question": query, 'chat_history':chat_history}, return_only_outputs=True)
-    
-    # Update the chat history with the query and its corresponding answer
-    # chat_history += [(query, result["answer"])]
-    
-    # Retrieve the page number from the source document
-    N = list(result['source_documents'][0])[1][1]['page']
-
-    return {"answer": result["answer"], "ref_pg_no": N}
 
 
 def save_pdf_file(b64_pdf):
@@ -717,10 +678,166 @@ def save_pdf_file(b64_pdf):
 
 
 def chat_pdf(api_key, hash_name, ques):
-    file = open(f'{hash_name}.pdf', 'rb')
-    response = generate_response(api_key, file, ques)
-    return response
+    
+    # Setup API key
+    os.environ["OPENAI_API_KEY"] = api_key
 
+    # Open the file
+    with open(f'{hash_name}.pdf', 'rb') as file:
+        # Load the PDF file using PyPDFLoader
+        loader = PyPDFLoader(file.name) 
+        documents = loader.load()
+
+        # Initialize OpenAIEmbeddings for text embeddings
+        embeddings = OpenAIEmbeddings()
+
+        # Create a ConversationalRetrievalChain with ChatOpenAI language model
+        # and PDF search retriever
+        pdfsearch = Chroma.from_documents(documents, embeddings,)
+
+        chain = ConversationalRetrievalChain.from_llm(ChatOpenAI(temperature=0.3, model_name = "gpt-3.5-turbo-16k"), 
+                                                      retriever=
+                                                      pdfsearch.as_retriever(search_kwargs={"k": 5}),
+                                                      return_source_documents=True)
+        
+        # Chat history
+        chat_history = []
+        
+        # Generate a response using the conversation chain
+        result = chain({"question": ques, 'chat_history': chat_history}, return_only_outputs=True)
+        
+        # Retrieve the page number from the source document
+        N = list(result['source_documents'][0])[1][1]['page']
+
+        text_context = []
+        for i in range(len(result['source_documents'])-1):
+            text_context.append(dict(result['source_documents'][i])['page_content'])
+        text_context = '\n\n'.join(text_context)
+
+    return {"answer": result["answer"], "ref_pg_no": N, "text_context": text_context}
+
+
+def answer_question_continue_pdf(api_key, text_context, qna_dict):
+
+    history = ChatMessageHistory()
+    history.add_user_message(f"""You are ChatGPT, an assistant. You will be provided with the text from some PDF document. You have to answer the questions asked by the user only using the text provided.
+                                \n
+                            Text Data: {text_context}""")
+    history.add_ai_message("I understand the instructions. Please ask the questions.")
+
+    for key in qna_dict:
+        for i, (question, answer) in enumerate(qna_dict[key].items()):
+
+            # Add user message
+            history.add_user_message(question)
+
+            if answer != "unanswered":
+                # Add assistant message
+                history.add_ai_message(answer)
+
+    total_tokens = sum([num_tokens_from_string(i.content, 'gpt-3.5-turbo') for i in history.messages])
+
+    while total_tokens > 15000:
+        del history.messages[0]
+        total_tokens = sum([num_tokens_from_string(i.content, 'gpt-3.5-turbo') for i in history.messages])
+
+    memory = ConversationBufferMemory(chat_memory=history)
+
+    llm = ChatOpenAI(
+    model_name = "gpt-3.5-turbo-16k",
+    temperature = 0.3,
+    openai_api_key=api_key,
+    request_timeout=120,
+    )
+
+    conversation = ConversationChain(
+    llm=llm,
+    memory=memory)
+
+    answer = conversation.predict(input=question)
+    answer_sentences = answer.split(".")
+    filtered_answer_sentences = []
+    for sent in answer_sentences:
+        if ("apologize" in " ".join(simple_preprocess(sent))) or ("apologies" in " ".join(simple_preprocess(sent))):
+            if ("repetition" in " ".join(simple_preprocess(sent))) or ("repeat" in " ".join(simple_preprocess(sent))):
+                    continue
+        else:
+            filtered_answer_sentences.append(sent)
+    answer = ".".join(filtered_answer_sentences)
+
+    output_language = detect_language(answer)
+
+    if output_language.lower() not in ['en', 'english']:
+        try:
+            translator = Translator()
+            answer = translator.translate(answer, dest=output_language).text
+        except:
+            answer = answer
+
+    return answer
+
+
+
+def answer_question_continue_math_equations(api_key, ocr_data_resp, qna_dict):
+
+    ocr_data_resp = "\n\n".join([x['content'] for x in ocr_data_resp])
+
+    history = ChatMessageHistory()
+    history.add_user_message(f"""You are ChatGPT, an assistant. You will be provided with the OCR data of some equation image. You have to answer the questions asked by the user only using the data provided.
+                                \n
+                            OCR Data: {ocr_data_resp}""")
+    history.add_ai_message("I understand the instructions. Please ask the questions.")
+
+    for key in qna_dict:
+        for i, (question, answer) in enumerate(qna_dict[key].items()):
+
+            # Add user message
+            history.add_user_message(question)
+
+            if answer != "unanswered":
+                # Add assistant message
+                history.add_ai_message(answer)
+
+    total_tokens = sum([num_tokens_from_string(i.content, 'gpt-3.5-turbo') for i in history.messages])
+
+    while total_tokens > 15000:
+        del history.messages[0]
+        total_tokens = sum([num_tokens_from_string(i.content, 'gpt-3.5-turbo') for i in history.messages])
+
+    memory = ConversationBufferMemory(chat_memory=history)
+
+    llm = ChatOpenAI(
+    model_name = "gpt-3.5-turbo-16k",
+    temperature = 0.3,
+    openai_api_key=api_key,
+    request_timeout=120,
+    )
+
+    conversation = ConversationChain(
+    llm=llm,
+    memory=memory)
+
+    answer = conversation.predict(input=question)
+    answer_sentences = answer.split(".")
+    filtered_answer_sentences = []
+    for sent in answer_sentences:
+        if ("apologize" in " ".join(simple_preprocess(sent))) or ("apologies" in " ".join(simple_preprocess(sent))):
+            if ("repetition" in " ".join(simple_preprocess(sent))) or ("repeat" in " ".join(simple_preprocess(sent))):
+                    continue
+        else:
+            filtered_answer_sentences.append(sent)
+    answer = ".".join(filtered_answer_sentences)
+
+    output_language = detect_language(answer)
+
+    if output_language.lower() not in ['en', 'english']:
+        try:
+            translator = Translator()
+            answer = translator.translate(answer, dest=output_language).text
+        except:
+            answer = answer
+
+    return answer
 
 
 def split_equations_and_text(input_string):
@@ -1130,6 +1247,60 @@ def pdf_chat():
     except Exception as e:
         reference_number = generate_reference_number(8)
         logger.error(f"Error in /chat_pdf route [Ref: {reference_number}]: \n{e}\n")
+        return jsonify(f'Error occurred. Please check server log with Ref No. {reference_number}\nError Summary: {e}')
+    
+
+@app.route('/chat_pdf_continue', methods=['POST', 'GET'])
+def pdf_chat_continue():
+    try:
+
+        if not os.path.exists("chat_pdf_continue_counter.txt"):
+            with open("chat_pdf_continue_counter.txt", "w") as f:
+                f.write("0")
+
+        with open("chat_pdf_continue_counter.txt", "r") as f:
+            counter = int(f.read())
+
+        with open("chat_pdf_continue_counter.txt", "w") as f:
+            f.write(str(counter + 1))
+
+        if (request.method == "POST"):
+            api_key = request.get_json().get('api_key')
+            text_context = request.get_json().get('text_context')
+            qna_dict = request.get_json().get('qna_dict')
+            answer = answer_question_continue_pdf(api_key, text_context, qna_dict)
+            return jsonify(answer)
+        
+    except Exception as e:
+        reference_number = generate_reference_number(8)
+        logger.error(f"Error in /chat_pdf_continue route [Ref: {reference_number}]: \n{e}\n")
+        return jsonify(f'Error occurred. Please check server log with Ref No. {reference_number}\nError Summary: {e}')
+    
+
+@app.route('/chat_math_equations', methods=['POST', 'GET'])
+def math_equations_chat():
+    try:
+
+        if not os.path.exists("chat_math_equations_counter.txt"):
+            with open("chat_math_equations_counter.txt", "w") as f:
+                f.write("0")
+
+        with open("chat_math_equations_counter.txt", "r") as f:
+            counter = int(f.read())
+
+        with open("chat_math_equations_counter.txt", "w") as f:
+            f.write(str(counter + 1))
+
+        if (request.method == "POST"):
+            api_key = request.get_json().get('api_key')
+            ocr_data_resp = request.get_json().get('ocr_data')
+            qna_dict = request.get_json().get('qna_dict')
+            answer = answer_question_continue_math_equations(api_key, ocr_data_resp, qna_dict)
+            return jsonify(answer)
+        
+    except Exception as e:
+        reference_number = generate_reference_number(8)
+        logger.error(f"Error in /chat_math_equations route [Ref: {reference_number}]: \n{e}\n")
         return jsonify(f'Error occurred. Please check server log with Ref No. {reference_number}\nError Summary: {e}')
 
 
