@@ -847,19 +847,19 @@ def split_equations_and_text(input_string):
 
     result = []
     for i, segment in enumerate(segments):
-        if segment is None:
-            continue
-        elif i % 4 == 0:
-            type = 'text'
-        else:
-            type = 'math'
 
         # Remove leading/trailing whitespace from the segment.
         segment = segment.strip()
 
+        output_buffer = io.StringIO()
+        print(segment, file=output_buffer)
+        output_string = output_buffer.getvalue()
+        output_buffer.close()
+
+
         # Only add non-empty segments to the result.
         if segment:
-            result.append({'content': segment, 'type': type})
+            result.append({'content': output_string})
 
     return result
 
@@ -1097,8 +1097,7 @@ def img2text():
             b64_img = request.get_json().get('b64_img')
             equation_bool = request.get_json().get('equation_bool')
             if (equation_bool == "1") or (equation_bool == 1):
-                # text = img_to_text_aws_textract(b64_img, equation=True)
-                text = "This feature is under maintenance. Please try again later."
+                text = img_to_text_aws_textract(b64_img, equation=True)
             elif (equation_bool == "0") or (equation_bool == 0):
                 text = img_to_text_aws_textract(b64_img, equation=False)
             else:
