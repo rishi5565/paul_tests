@@ -848,6 +848,9 @@ def split_equations_and_text(input_string):
     result = []
     for i, segment in enumerate(segments):
 
+        if segment is None:
+            continue
+
         # Remove leading/trailing whitespace from the segment.
         segment = segment.strip()
 
