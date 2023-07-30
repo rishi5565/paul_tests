@@ -840,6 +840,66 @@ def answer_question_continue_math_equations(api_key, ocr_data_resp, qna_dict):
     return answer
 
 
+def answer_question_multiple_images(api_key, total_transcript_data, qna_dict):
+
+    history = ChatMessageHistory()
+    history.add_user_message(f"""You are ChatGPT, an assistant. You will be provided with the transcription data of some images. You have to answer the questions asked by the user only using the data provided.
+                                \n
+                            Transcription Data: {total_transcript_data}""")
+    history.add_ai_message("I understand the instructions. Please ask the questions.")
+
+    for key in qna_dict:
+        for i, (question, answer) in enumerate(qna_dict[key].items()):
+
+            # Add user message
+            history.add_user_message(question)
+
+            if answer != "unanswered":
+                # Add assistant message
+                history.add_ai_message(answer)
+
+    total_tokens = sum([num_tokens_from_string(i.content, 'gpt-3.5-turbo') for i in history.messages])
+
+    while total_tokens > 15000:
+        del history.messages[0]
+        total_tokens = sum([num_tokens_from_string(i.content, 'gpt-3.5-turbo') for i in history.messages])
+
+    memory = ConversationBufferMemory(chat_memory=history)
+
+    llm = ChatOpenAI(
+    model_name = "gpt-3.5-turbo-16k",
+    temperature = 0.3,
+    openai_api_key=api_key,
+    request_timeout=120,
+    )
+
+    conversation = ConversationChain(
+    llm=llm,
+    memory=memory)
+
+    answer = conversation.predict(input=question)
+    answer_sentences = answer.split(".")
+    filtered_answer_sentences = []
+    for sent in answer_sentences:
+        if ("apologize" in " ".join(simple_preprocess(sent))) or ("apologies" in " ".join(simple_preprocess(sent))):
+            if ("repetition" in " ".join(simple_preprocess(sent))) or ("repeat" in " ".join(simple_preprocess(sent))):
+                    continue
+        else:
+            filtered_answer_sentences.append(sent)
+    answer = ".".join(filtered_answer_sentences)
+
+    output_language = detect_language(answer)
+
+    if output_language.lower() not in ['en', 'english']:
+        try:
+            translator = Translator()
+            answer = translator.translate(answer, dest=output_language).text
+        except:
+            answer = answer
+
+    return answer
+
+
 def split_equations_and_text(input_string):
     # The regex pattern for matching both inline and display math.
     pattern = r'(?:\\\((.*?)\\\))|(?:\\\[([\s\S]*?)\\\])'
@@ -1303,6 +1363,33 @@ def math_equations_chat():
     except Exception as e:
         reference_number = generate_reference_number(8)
         logger.error(f"Error in /chat_math_equations route [Ref: {reference_number}]: \n{e}\n")
+        return jsonify(f'Error occurred. Please check server log with Ref No. {reference_number}\nError Summary: {e}')
+    
+
+@app.route('/chat_multiple_images', methods=['POST', 'GET'])
+def multiple_images_chat():
+    try:
+
+        if not os.path.exists("chat_multiple_images_counter.txt"):
+            with open("chat_multiple_images_counter.txt", "w") as f:
+                f.write("0")
+
+        with open("chat_multiple_images_counter.txt", "r") as f:
+            counter = int(f.read())
+
+        with open("chat_multiple_images_counter.txt", "w") as f:
+            f.write(str(counter + 1))
+
+        if (request.method == "POST"):
+            api_key = request.get_json().get('api_key')
+            total_transcript_data = request.get_json().get('total_transcript')
+            qna_dict = request.get_json().get('qna_dict')
+            answer = answer_question_multiple_images(api_key, total_transcript_data, qna_dict)
+            return jsonify(answer)
+        
+    except Exception as e:
+        reference_number = generate_reference_number(8)
+        logger.error(f"Error in /chat_multiple_images route [Ref: {reference_number}]: \n{e}\n")
         return jsonify(f'Error occurred. Please check server log with Ref No. {reference_number}\nError Summary: {e}')
 
 
