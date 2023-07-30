@@ -580,6 +580,7 @@ def img_to_text_aws_textract(b64_img, equation=False):
 
         job_id = response['JobId']
 
+        blocks = []
         for i in range(12):
             try:
                 response = textract_client.get_document_text_detection(JobId=job_id)
@@ -911,6 +912,15 @@ def split_equations_and_text(input_string):
         if segment is None:
             continue
 
+        elif (("$" in segment.strip()[:6]) and ("$" in segment.strip()[-6:])):
+            type_data = "dollar"
+
+        elif ("begin" in segment.strip()[:16]) and ("end" in segment.strip()[-16:]):
+            type_data = "begin_equation"
+
+        else:
+            type_data = "dollar"
+
         # Remove leading/trailing whitespace from the segment.
         segment = segment.strip()
 
@@ -922,7 +932,7 @@ def split_equations_and_text(input_string):
 
         # Only add non-empty segments to the result.
         if segment:
-            result.append({'content': output_string})
+            result.append({'content': output_string, 'type': type_data})
 
     return result
 
